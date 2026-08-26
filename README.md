@@ -39,6 +39,10 @@ THIS IMPLEMENTATION SHOULD NOT BE CONSIDERED AS PRODUCTION-READY.
         year =      2026,
     }
 
+## Acknowledgements
+
+Thanks to [@yhql](https://github.com/yhql) for his contributions to this project.
+
 ## License
 
 This project is licensed under the terms of the MIT license.
