@@ -1,0 +1,26 @@
+[package]
+name = "edilithium"
+version = "0.1.0"
+edition = "2024"
+authors = ["Morgane Guerreau"]
+license = "MIT"
+
+[dependencies]
+curve25519-dalek = { version = "=5.0.0-rc.1", features = ["rand_core"]}
+ed25519-dalek = { version = "=3.0.0-rc.1", features = ["rand_core"]}
+elliptic-curve = "=0.14.1"
+ecdsa = { version = "=0.17.0-rc.23", features = ["algorithm"]}
+sha3 = "=0.11.0"
+sha2 = "=0.11.0"
+ml-dsa = "=0.1.0"
+hybrid-array = "=0.4.13"
+getrandom = { version = "=0.4.3", features = ["sys_rng"] }
+rand_core = "=0.10.0"
+digest = "=0.11.3"
+signature = "=3.0.0"
+keccak = "=0.2.0"
+crypto-common = "=0.2.1"
+p256 = "=0.14.0-rc.15"
+p384 = "=0.14.0-rc.15"
+p521 = "=0.14.0-rc.15"
+crypto-bigint = "0.7.5"
