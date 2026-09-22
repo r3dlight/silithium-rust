@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 curve25519-dalek = { version = "5.0", features = ["rand_core"]}
 ed25519-dalek = { version = "3.0", features = ["rand_core"]}
-elliptic-curve = "0.14"
+elliptic-curve = { version = "0.14", features = ["sec1"] }
 sha3 = "0.11"
 sha2 = "0.11"
 ml-dsa = "0.1"
