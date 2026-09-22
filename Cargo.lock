@@ -197,7 +197,6 @@ dependencies = [
  "crypto-common",
  "curve25519-dalek",
  "digest",
- "ecdsa",
  "ed25519-dalek",
  "elliptic-curve",
  "getrandom",
