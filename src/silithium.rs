@@ -8,9 +8,11 @@ use elliptic_curve::{
 use hybrid_array::Array;
 use ml_dsa::{Generate, Keypair, MlDsaParams, SigningKey};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
+use getrandom::SysRng;
 
 use crypto_bigint::{BitOps, Encoding};
+
+use crate::Error;
 
 pub(crate) fn bytes2scalar<C: CurveArithmetic>(mut bytes: &[u8]) -> Scalar<C> {
     // Compute number of bytes in `n` (curve order)
@@ -33,20 +35,30 @@ where
     x: Array<u8, C::FieldBytesSize>,
 }
 
-impl<C, M> From<&[u8]> for Signature<C, M>
+impl<C, M> TryFrom<&[u8]> for Signature<C, M>
 where
     C: CurveArithmetic,
     M: MlDsaParams,
 {
-    fn from(buffer: &[u8]) -> Signature<C, M> {
+    type Error = Error;
+
+    fn try_from(buffer: &[u8]) -> Result<Signature<C, M>, Error> {
         let mut s: Array<u8, M::SignatureSize> = Default::default();
         let mut x: Array<u8, C::FieldBytesSize> = Default::default();
+
+        let expected = s.len() + x.len();
+        if buffer.len() != expected {
+            return Err(Error::InvalidLength {
+                expected,
+                actual: buffer.len(),
+            });
+        }
 
         let (s_buf, x_buf) = buffer.split_at(s.len());
         s.copy_from_slice(s_buf);
         x.copy_from_slice(x_buf);
 
-        Signature { s, x }
+        Ok(Signature { s, x })
     }
 }
 
@@ -77,11 +89,11 @@ where
     AffinePoint<C>: FromSec1Point<C> + ToSec1Point<C>,
     FieldBytesSize<C>: sec1::ModulusSize,
 {
-    pub fn keygen() -> Self {
-        let ec_key = SecretKey::<C>::generate();
-        let mldsa_key = SigningKey::<M>::generate();
+    pub fn keygen() -> Result<Self, Error> {
+        let ec_key = SecretKey::<C>::try_generate()?;
+        let mldsa_key = SigningKey::<M>::try_generate()?;
 
-        Self { ec_key, mldsa_key }
+        Ok(Self { ec_key, mldsa_key })
     }
 
     fn serialize_commitment(&self, nonce: AffinePoint<C>) -> Vec<u8> {
@@ -98,11 +110,9 @@ where
         commit
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Signature<C, M> {
-        let mut rng = UnwrapErr(SysRng);
-
+    pub fn sign(&self, msg: &[u8]) -> Result<Signature<C, M>, Error> {
         // r = RandomScalar()
-        let r = C::Scalar::generate();
+        let r = C::Scalar::try_generate()?;
 
         // R = r*G
         let nonce = C::ProjectivePoint::mul_by_generator(&r).to_affine();
@@ -113,11 +123,10 @@ where
         let mldsa_sig = self
             .mldsa_key
             .expanded_key()
-            .sign_randomized(msg, &ctx, &mut rng)
-            .expect("Could not generate signature");
+            .sign_randomized(msg, &ctx, &mut SysRng)
+            .map_err(|_| Error::Signing)?;
 
         let mldsa_encoded = mldsa_sig.encode();
-        let mldsa_slice: &[u8] = mldsa_encoded.as_slice();
 
         let (c_bytes, _, _) = M::split_sig(&mldsa_encoded);
         let c = bytes2scalar::<C>(c_bytes);
@@ -126,8 +135,10 @@ where
         let sk = C::Scalar::from(self.ec_key.to_nonzero_scalar());
         let x: Scalar<C> = r + sk * c;
 
-        let x_bytes = x.to_repr();
-        Signature::from([mldsa_slice, x_bytes.as_slice()].concat().as_slice())
+        Ok(Signature {
+            s: mldsa_encoded,
+            x: x.to_repr(),
+        })
     }
 
     pub fn verify(&self, msg: &[u8], sig: Signature<C, M>) -> bool {
@@ -142,8 +153,10 @@ where
         // ctx = R || P
         let ctx = self.serialize_commitment(nonce.to_affine());
 
-        let sig_bytes = ml_dsa::EncodedSignature::<M>::try_from(&sig.s[..]).unwrap();
-        let sig_dec = ml_dsa::Signature::decode(&sig_bytes).unwrap();
+        // A malformed ML-DSA encoding is an invalid signature
+        let Some(sig_dec) = ml_dsa::Signature::<M>::decode(&sig.s) else {
+            return false;
+        };
 
         self.mldsa_key
             .verifying_key()
@@ -167,9 +180,9 @@ mod tests {
         FieldBytesSize<C>: sec1::ModulusSize,
         M: MlDsaParams,
     {
-        let key = Key::<C, M>::keygen();
+        let key = Key::<C, M>::keygen().unwrap();
         let msg = b"hello";
-        let sig = key.sign(msg);
+        let sig = key.sign(msg).unwrap();
         assert!(key.verify(msg, sig));
     }
 
@@ -180,9 +193,9 @@ mod tests {
         FieldBytesSize<C>: sec1::ModulusSize,
         M: MlDsaParams,
     {
-        let key = Key::<C, M>::keygen();
+        let key = Key::<C, M>::keygen().unwrap();
         let msg = b"hello";
-        let sig = key.sign(msg);
+        let sig = key.sign(msg).unwrap();
 
         // Fault in the ML-DSA part
         let mut sig_fault = sig.clone();
@@ -195,17 +208,65 @@ mod tests {
         assert_eq!(key.verify(msg, sig_fault), false);
     }
 
+    fn malformed<C, M>()
+    where
+        C: CurveArithmetic,
+        AffinePoint<C>: FromSec1Point<C> + ToSec1Point<C>,
+        FieldBytesSize<C>: sec1::ModulusSize,
+        M: MlDsaParams,
+    {
+        let key = Key::<C, M>::keygen().unwrap();
+        let msg = b"hello";
+        let mut sig_fault = key.sign(msg).unwrap();
+
+        // Invalid hint encoding: ML-DSA decoding fails
+        let n = sig_fault.s.len();
+        sig_fault.s[n - 1] = 0xff;
+        assert_eq!(key.verify(msg, sig_fault), false);
+
+        // Truncated buffer
+        let buffer = [0u8; 100];
+        assert!(matches!(
+            Signature::<C, M>::try_from(&buffer[..]),
+            Err(Error::InvalidLength { actual: 100, .. })
+        ));
+    }
+
+    // ML-DSA-87 keys are large (~178 KB) and unoptimized builds copy them
+    // several times on the stack, which overflows the default 2 MB test thread.
+    fn with_big_stack(f: fn()) {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn basic_tests() {
-        basic::<NistP256, MlDsa44>();
-        basic::<NistP384, MlDsa65>();
-        basic::<NistP521, MlDsa87>();
+        with_big_stack(|| {
+            basic::<NistP256, MlDsa44>();
+            basic::<NistP384, MlDsa65>();
+            basic::<NistP521, MlDsa87>();
+        });
     }
 
     #[test]
     fn fail_tests() {
-        fail::<NistP256, MlDsa44>();
-        fail::<NistP384, MlDsa65>();
-        fail::<NistP521, MlDsa87>();
+        with_big_stack(|| {
+            fail::<NistP256, MlDsa44>();
+            fail::<NistP384, MlDsa65>();
+            fail::<NistP521, MlDsa87>();
+        });
+    }
+
+    #[test]
+    fn malformed_tests() {
+        with_big_stack(|| {
+            malformed::<NistP256, MlDsa44>();
+            malformed::<NistP384, MlDsa65>();
+            malformed::<NistP521, MlDsa87>();
+        });
     }
 }
